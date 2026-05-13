@@ -1,0 +1,54 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: chinese_raffle_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks:
+      - chinese_raffle_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./ChineseRaffleApi/ChineseRaffleApi
+      dockerfile: Dockerfile
+    container_name: chinese_raffle_api
+    ports:
+      - "5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:5000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      ConnectionStrings__DefaultConnection: "Server=host.docker.internal;Database=ChineseRaffle;User Id=docker_user;Password=442127912;TrustServerCertificate=True"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - chinese_raffle_network
+
+  angular:
+    build:
+      context: ./ChineseRaffleNg/ChineseRaffleNg
+      dockerfile: Dockerfile
+    container_name: chinese_raffle_ng
+    ports:
+      - "4200:4200"
+    environment:
+      API_URL: http://api:5000
+    depends_on:
+      - api
+    networks:
+      - chinese_raffle_network
+
+networks:
+  chinese_raffle_network:
+    driver: bridge
