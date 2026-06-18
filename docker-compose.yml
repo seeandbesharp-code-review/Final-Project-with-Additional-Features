@@ -15,6 +15,85 @@ services:
       timeout: 3s
       retries: 5
 
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: chinese_raffle_sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: Y
+      MSSQL_SA_PASSWORD: "StrongP@ssw0rd!123"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    networks:
+      - chinese_raffle_network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -Q \"SELECT 1\" >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: chinese_raffle_kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - chinese_raffle_network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: chinese_raffle_zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    # --- הוספת ה-Volumes ל-Zookeeper כדי לשמור על הנתונים שלו ---
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    networks:
+      - chinese_raffle_network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: chinese_raffle_kafka_ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: chinese-raffle
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_READONLY: "false"
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - chinese_raffle_network
+
   api:
     build:
       context: ./ChineseRaffleApi/ChineseRaffleApi
@@ -28,8 +107,20 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
-      ConnectionStrings__DefaultConnection: "Server=host.docker.internal;Database=ChineseRaffle;User Id=docker_user;Password=442127912;TrustServerCertificate=True"
+      Kafka__BootstrapServers: kafka:9092
+      Kafka__TopicName: chinese-raffle-events
+      Kafka__Producer__ClientId: chinese-raffle-api
+      Kafka__Producer__Acks: All
+      Kafka__Producer__EnableIdempotence: true
+      Kafka__Producer__MessageSendMaxRetries: 3
+      Kafka__Producer__RetryBackoffMs: 250
+      Kafka__Producer__LingerMs: 5
+      Kafka__Producer__CompressionType: None
+      Kafka__Producer__SocketTimeoutMs: 10000
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=ChineseRaffle;User Id=sa;Password=StrongP@ssw0rd!123;TrustServerCertificate=True;Encrypt=False"
     depends_on:
+      sqlserver:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:
@@ -48,6 +139,36 @@ services:
       - api
     networks:
       - chinese_raffle_network
+
+  consumer:
+    build:
+      context: ./ChineseRaffleConsumer
+      dockerfile: Dockerfile
+    container_name: chinese_raffle_consumer
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Kafka__BootstrapServers: kafka:9092
+      Kafka__TopicName: chinese-raffle-events
+      Kafka__GroupId: chinese-raffle-consumer
+      Kafka__AutoOffsetReset: Earliest
+      Kafka__EnableAutoCommit: false
+      Kafka__EnableAutoOffsetStore: false
+      Kafka__SessionTimeoutMs: 10000
+      Kafka__HeartbeatIntervalMs: 3000
+      Kafka__MaxPollIntervalMs: 300000
+      Kafka__ClientId: chinese-raffle-consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - chinese_raffle_network
+
+volumes:
+  kafka_data:
+  sqlserver_data:
+  # --- הצהרה על ה-Volumes החדשים של זוקיפר ---
+  zookeeper_data:
+  zookeeper_log:
 
 networks:
   chinese_raffle_network:
